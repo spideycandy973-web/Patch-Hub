@@ -1,12 +1,12 @@
 # Patch Hub
 
-An early Android utility for replacing **one existing file inside an APK** in an APK you own or are authorized to modify. It uses Android's document picker and runs locally; it does not require root or network access.
+An early Android utility for inspecting an APK and replacing **multiple existing files inside it** in an APK you own or are authorized to modify. It uses Android's document picker and runs locally; it does not require root or network access.
 
 ## What it does (and doesn't)
 
-Choose a source APK and a replacement file, enter the exact ZIP entry path (for example `assets/config.json`), then save a new APK. It copies the ZIP entries, replaces the specified file, and removes old v1 signature files. The original APK is not intentionally modified; always keep a backup and choose a different output document.
+Choose a source APK, browse and search its file entries, then queue replacement files and export a new APK. It copies the ZIP entries, replaces the queued files, and removes old v1 signature files. The glass-inspired interface is an approximation rather than native iOS Liquid Glass. The original APK is not intentionally modified; always keep a backup and choose a different output document.
 
-The result is **unsigned and not installable as-is**. Android APK signatures are invalidated by modification. Use Android SDK Build Tools `zipalign` and `apksigner` on a computer to align and sign it with an appropriate key. Updating an existing installation normally requires the original app's signing key; a different key generally requires uninstalling the original first (which may delete its data). Split APKs, integrity checks, compressed asset expectations, and other app-specific constraints can prevent the modified app from working. Any existing file entry can be replaced except old signature metadata. This is a raw file replacement, not a code or compiled-resource editor: you must supply a compatible replacement yourself, and edits to executable code, manifests, or resources can easily make the APK unusable.
+The result is **unsigned and not installable as-is**. Android APK signatures are invalidated by modification. Use Android SDK Build Tools `zipalign` and `apksigner` on a computer to align and sign it with an appropriate key. Updating an existing installation normally requires the original app's signing key; a different key generally requires uninstalling the original first (which may delete its data). Split APKs, integrity checks, compressed asset expectations, and other app-specific constraints can prevent the modified app from working. Existing file entries can be replaced except old signature metadata; scanning is limited to 50,000 entries and search displays up to 300 matches at once. This is a raw file replacement, not a code or compiled-resource editor: you must supply a compatible replacement yourself, and edits to executable code, manifests, or resources can easily make the APK unusable.
 
 Patch Hub does not create unlimited currencies, change server-side data, bypass protections, guarantee successful changes to arbitrary apps, or include an AI agent. No free unlimited AI service is promised. Use only on software you have permission to modify.
 
@@ -23,3 +23,5 @@ apksigner verify --verbose patched-signed.apk
 ```
 
 Do not share your signing key or passwords. Newer native libraries can require additional alignment; consult the Android SDK Build Tools documentation for the APK being modified.
+
+Debug builds may be signed with different keys on different CI runs, so upgrading between them can require uninstalling the earlier version first (and may erase its data). This prototype has not been verified on every device.
