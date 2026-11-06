@@ -185,10 +185,18 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             String summary = null, problem = null;
             try {
-                byte[] data;
-                if (standalone) { try (InputStream in = getContentResolver().openInputStream(source)) { if (in == null) throw new IOException("Cannot open file"); data = readBounded(in, 16 * 1024 * 1024); } }
-                else data = loadEntry(source, staged, target, 16 * 1024 * 1024);
-                summary = FileInspector.describe(data);
+                if (standalone || staged != null) {
+                    try (InputStream in = getContentResolver().openInputStream(standalone ? source : staged)) { if (in == null) throw new IOException("Cannot open file"); summary = FileInspector.describe(in); }
+                } else {
+                    try (InputStream raw = getContentResolver().openInputStream(source)) {
+                        if (raw == null) throw new IOException("Cannot open APK");
+                        try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw))) {
+                            ZipEntry e; boolean found = false;
+                            while ((e = zip.getNextEntry()) != null) { if (e.getName().equals(target)) { summary = FileInspector.describe(zip); found = true; break; } zip.closeEntry(); }
+                            if (!found) throw new IOException("File not found");
+                        }
+                    }
+                }
             } catch (Exception e) { problem = e.getMessage(); }
             final String result = summary, error = problem;
             runOnUiThread(() -> {
