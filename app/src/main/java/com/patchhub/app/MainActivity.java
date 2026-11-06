@@ -15,6 +15,10 @@ import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.util.Base64;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.security.MessageDigest;
 import android.view.View;
 import android.widget.*;
 import java.io.*;
@@ -25,7 +29,7 @@ import java.util.*;
 import java.util.zip.*;
 
 public class MainActivity extends Activity {
-    private static final int APK = 1, REPLACEMENT = 2, OUTPUT = 3, EXTRACT = 4, INSPECT_FILE = 5;
+    private static final int APK = 1, REPLACEMENT = 2, OUTPUT = 3, EXTRACT = 4, INSPECT_FILE = 5, PATCH_PACK = 6;
     private static final int MAX_TEXT = 256 * 1024;
     private static final int WHITE = Color.rgb(241, 246, 255), MUTED = Color.rgb(165, 182, 209), BLUE = Color.rgb(131, 183, 255);
     private Uri apk, replacement;
@@ -77,6 +81,11 @@ public class MainActivity extends Activity {
         entryCount = text("Select an APK to inspect its contents.", 13, MUTED, false); source.addView(entryCount);
         chooseApkButton = button("Choose APK", false); source.addView(chooseApkButton);
         scanButton = button("Browse & search files", false); source.addView(scanButton);
+
+        LinearLayout catalog = card(root); catalog.addView(text("COMMUNITY PATCHES", 12, BLUE, true));
+        TextView catalogHelp = text("Import a Patch Hub JSON patch from your device. Patches target an exact APK hash and replace selected files. Only install patches you trust; compatibility checks do not prove safety.", 13, MUTED, false); space(catalogHelp, 10, 0); catalog.addView(catalogHelp);
+        Button importPatch = button("Import a patch", false); catalog.addView(importPatch);
+        importPatch.setOnClickListener(v -> { if (busy) return; if (apk == null) { status.setText("Choose and inspect an APK before importing a patch."); return; } pick(PATCH_PACK, "*/*"); });
 
         LinearLayout edit = card(root); edit.addView(text("02   PATCH QUEUE", 12, BLUE, true));
         TextView explanation = text("Choose an existing entry, then select its replacement. Add multiple changes before exporting.", 14, MUTED, false); space(explanation, 10, 6); edit.addView(explanation);
@@ -161,7 +170,8 @@ public class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if (request == INSPECT_FILE) { inspectData(uri, null, name(uri), true); }
+        if (request == PATCH_PACK) { importPatchPack(uri); }
+        else if (request == INSPECT_FILE) { inspectData(uri, null, name(uri), true); }
         else if (request == APK) { apk = uri; entries.clear(); queue.clear(); replacement = null; path.setText(""); replacementLabel.setText("No replacement selected"); updateQueue(); apkLabel.setText(name(uri)); scan(uri); }
         else if (request == REPLACEMENT) { replacement = uri; replacementLabel.setText(name(uri)); }
         else if (request == EXTRACT) {
@@ -179,6 +189,58 @@ public class MainActivity extends Activity {
             Uri source = apk; LinkedHashMap<String, Uri> patches = new LinkedHashMap<>(queue); setBusy(true); status.setText("Building patched APK…");
             new Thread(() -> { String msg; try { createPatch(source, patches, uri); msg = "Exported unsigned APK. Align and sign before installation; updates require the original signing key."; } catch (Exception e) { msg = "Export failed: " + e.getMessage() + ". The output may be incomplete; delete it if needed."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
         }
+    }
+    private static final class ImportedPatch {
+        String title, author, expectedHash;
+        LinkedHashMap<String, byte[]> files = new LinkedHashMap<>();
+    }
+    private String apkSha256(Uri source) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream in = getContentResolver().openInputStream(source)) {
+            if (in == null) throw new IOException("Cannot open APK");
+            byte[] buf = new byte[32768]; int n; while ((n = in.read(buf)) != -1) digest.update(buf, 0, n);
+        }
+        StringBuilder value = new StringBuilder(); for (byte b : digest.digest()) value.append(String.format(Locale.ROOT, "%02x", b & 255)); return value.toString();
+    }
+    private void importPatchPack(Uri uri) {
+        if (busy || apk == null) return;
+        Uri source = apk; Set<String> known = new HashSet<>(entries); Set<String> queued = new HashSet<>(queue.keySet());
+        setBusy(true); status.setText("Checking patch and APK compatibility…");
+        new Thread(() -> {
+            ImportedPatch patch = null; String problem = null;
+            try {
+                byte[] raw; try (InputStream in = getContentResolver().openInputStream(uri)) { if (in == null) throw new IOException("Cannot open patch"); raw = readBounded(in, 4 * 1024 * 1024); }
+                JSONObject obj = new JSONObject(new String(raw, StandardCharsets.UTF_8));
+                if (obj.getInt("format") != 1) throw new IOException("Unsupported patch format");
+                patch = new ImportedPatch(); patch.title = obj.getString("name").trim(); patch.author = obj.optString("author", "Unknown").trim(); patch.expectedHash = obj.getString("apk_sha256").toLowerCase(Locale.ROOT);
+                if (patch.title.isEmpty() || patch.title.length() > 120 || patch.author.length() > 120) throw new IOException("Invalid patch name or author");
+                if (!patch.expectedHash.matches("[0-9a-f]{64}")) throw new IOException("Invalid APK SHA-256");
+                String actual = apkSha256(source); if (!actual.equals(patch.expectedHash)) throw new IOException("APK hash does not match this patch. It is for a different file or version.");
+                JSONArray changes = obj.getJSONArray("replacements"); if (changes.length() < 1 || changes.length() > 50) throw new IOException("Patch must contain 1–50 replacements");
+                for (int i = 0; i < changes.length(); i++) {
+                    JSONObject item = changes.getJSONObject(i); String path = item.getString("path");
+                    if (!validPath(path) || !known.contains(path)) throw new IOException("Entry missing or invalid: " + path);
+                    if (queued.contains(path)) throw new IOException("Already queued: " + path + ". Clear the queue or use a compatible patch.");
+                    if (patch.files.containsKey(path)) throw new IOException("Duplicate entry: " + path);
+                    String encoded = item.getString("data_base64"); if (!encoded.matches("[A-Za-z0-9+/]*={0,2}") || encoded.length() % 4 != 0) throw new IOException("Invalid base64 data for " + path);
+                    patch.files.put(path, Base64.decode(encoded, Base64.DEFAULT));
+                }
+            } catch (Exception e) { problem = e.getMessage(); }
+            final ImportedPatch verified = patch; final String error = problem;
+            runOnUiThread(() -> {
+                setBusy(false); if (error != null) { status.setText("Patch rejected: " + error); return; }
+                StringBuilder summary = new StringBuilder("By ").append(verified.author).append("\nExact APK SHA-256 matched.\n\nReplaces ").append(verified.files.size()).append(" file(s):\n");
+                for (String path : verified.files.keySet()) summary.append("\n• ").append(path);
+                summary.append("\n\nA matching hash does not mean this patch is safe. Only use patches from creators you trust.");
+                new AlertDialog.Builder(this).setTitle(verified.title).setMessage(summary).setNegativeButton("Cancel", null).setPositiveButton("Add patch", (dialog, which) -> {
+                    LinkedHashMap<String, Uri> staged = new LinkedHashMap<>(); ArrayList<File> created = new ArrayList<>();
+                    try {
+                        for (Map.Entry<String, byte[]> change : verified.files.entrySet()) { File file = File.createTempFile("community-", ".bin", getCacheDir()); created.add(file); try (FileOutputStream out = new FileOutputStream(file)) { out.write(change.getValue()); } staged.put(change.getKey(), Uri.fromFile(file)); }
+                        queue.putAll(staged); updateQueue(); status.setText("Patch added to queue. Export the unsigned APK to apply it.");
+                    } catch (IOException ex) { for (File file : created) file.delete(); status.setText("Could not stage patch: " + ex.getMessage()); }
+                }).show();
+            });
+        }).start();
     }
     private void inspectData(Uri source, Uri staged, String target, boolean standalone) {
         setBusy(true); status.setText("Inspecting file…");
