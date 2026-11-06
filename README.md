@@ -1,6 +1,6 @@
 # Patch Hub
 
-An early Android utility for inspecting an APK and replacing **multiple existing files inside it** in an APK you own or are authorized to modify. It uses Android's document picker and runs locally; it does not require root or network access.
+An early Android utility for inspecting an APK and replacing **multiple existing files inside it** in an APK you own or are authorized to modify. It uses Android's document picker and runs locally; APK editing does not require root or network access. Optional Shizuku connection diagnostics can report shell or root identity after the user grants permission; no patch operation currently uses Shizuku.
 
 ## What it does (and doesn't)
 
@@ -25,3 +25,7 @@ apksigner verify --verbose patched-signed.apk
 Do not share your signing key or passwords. Newer native libraries can require additional alignment; consult the Android SDK Build Tools documentation for the APK being modified.
 
 Debug builds may be signed with different keys on different CI runs, so upgrading between them can require uninstalling the earlier version first (and may erase its data). This prototype has not been verified on every device.
+
+## Optional Shizuku connection
+
+Install and start Shizuku separately, then tap **Connect Shizuku** and grant access. On unrooted Android 11 or newer, Shizuku can be started with wireless debugging; older Android versions usually require a computer. After reboot it may need to be started again. This integration currently only requests permission and displays connection/identity diagnostics; it does not inspect or modify other apps through Shizuku. ADB shell is not root and generally cannot access other apps' private data or memory.

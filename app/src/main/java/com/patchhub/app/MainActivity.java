@@ -3,6 +3,8 @@ package com.patchhub.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import rikka.shizuku.Shizuku;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -33,6 +35,13 @@ public class MainActivity extends Activity {
     private EditText path;
     private Button scanButton, saveButton, chooseApkButton, chooseReplacementButton, addButton;
     private boolean busy;
+    private TextView shizukuStatus;
+    private final Shizuku.OnBinderReceivedListener binderReceived = () -> runOnUiThread(this::refreshShizuku);
+    private final Shizuku.OnBinderDeadListener binderDead = () -> runOnUiThread(this::refreshShizuku);
+    private final Shizuku.OnRequestPermissionResultListener permissionResult = (requestCode, grantResult) -> runOnUiThread(() -> {
+        refreshShizuku();
+        if (requestCode == 100 && grantResult != PackageManager.PERMISSION_GRANTED) shizukuStatus.setText("Permission denied. You can change this in Shizuku settings.");
+    });
     private String extractTarget;
 
     @Override public void onCreate(Bundle state) {
@@ -45,6 +54,16 @@ public class MainActivity extends Activity {
         TextView eyebrow = text("PATCH HUB   /   WORKSPACE", 11, BLUE, true); root.addView(eyebrow);
         TextView title = text("Your APK,\nyour canvas.", 34, WHITE, true); title.setLineSpacing(dp(1), 1f); root.addView(title);
         TextView subtitle = text("Inspect. Prepare. Patch with intention.", 14, MUTED, false); subtitle.setPadding(0, dp(8), 0, dp(20)); root.addView(subtitle);
+
+        LinearLayout bridge = card(root); bridge.addView(text("SHIZUKU   /   OPTIONAL ACCESS", 12, BLUE, true));
+        shizukuStatus = text("Checking connection…", 14, MUTED, false); space(shizukuStatus, 10, 4); bridge.addView(shizukuStatus);
+        Button connect = button("Connect Shizuku", false); bridge.addView(connect);
+        TextView bridgeHelp = text("Install and start Shizuku first. On Android 11+ use wireless debugging; older versions normally need a computer. Shizuku provides shell access, not universal patching or access to private app data.", 13, MUTED, false); space(bridgeHelp, 10, 0); bridge.addView(bridgeHelp);
+        connect.setOnClickListener(v -> requestShizuku());
+        Shizuku.addBinderReceivedListenerSticky(binderReceived);
+        Shizuku.addBinderDeadListener(binderDead);
+        Shizuku.addRequestPermissionResultListener(permissionResult);
+        refreshShizuku();
 
         LinearLayout source = card(root); source.addView(text("01   SOURCE APK", 12, BLUE, true));
         apkLabel = text("No APK selected", 18, WHITE, true); space(apkLabel, 12, 3); source.addView(apkLabel);
@@ -86,6 +105,31 @@ public class MainActivity extends Activity {
             if (apk == null || queue.isEmpty()) { status.setText("Choose an APK and add at least one replacement."); return; }
             startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/vnd.android.package-archive").putExtra(Intent.EXTRA_TITLE, "patched-unsigned.apk"), OUTPUT);
         });
+    }
+    @Override protected void onDestroy() {
+        Shizuku.removeBinderReceivedListener(binderReceived);
+        Shizuku.removeBinderDeadListener(binderDead);
+        Shizuku.removeRequestPermissionResultListener(permissionResult);
+        super.onDestroy();
+    }
+    private void refreshShizuku() {
+        try {
+            if (!Shizuku.pingBinder()) { shizukuStatus.setText("Not connected · Start Shizuku, then return here."); return; }
+            if (Shizuku.isPreV11()) { shizukuStatus.setText("Shizuku is too old. Install version 11 or newer."); return; }
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) { shizukuStatus.setText("Available · Permission not granted."); return; }
+            int uid = Shizuku.getUid();
+            String identity = uid == 0 ? "root" : uid == 2000 ? "ADB shell" : "UID " + uid;
+            shizukuStatus.setText("Connected · " + identity + " · Shizuku API " + Shizuku.getVersion() + "\nConnection diagnostics only; APK edits still use the document picker.");
+        } catch (RuntimeException e) { shizukuStatus.setText("Shizuku unavailable: " + e.getMessage()); }
+    }
+    private void requestShizuku() {
+        try {
+            if (!Shizuku.pingBinder()) { refreshShizuku(); return; }
+            if (Shizuku.isPreV11()) { refreshShizuku(); return; }
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) { refreshShizuku(); return; }
+            if (Shizuku.shouldShowRequestPermissionRationale()) { shizukuStatus.setText("Permission was denied permanently. Enable Patch Hub in Shizuku settings."); return; }
+            Shizuku.requestPermission(100);
+        } catch (RuntimeException e) { shizukuStatus.setText("Unable to request Shizuku access: " + e.getMessage()); }
     }
     private int dp(int n) { return (int)(n * getResources().getDisplayMetrics().density + .5f); }
     private GradientDrawable shape(int color, int radius, int stroke) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius)); d.setStroke(dp(1), stroke); return d; }
