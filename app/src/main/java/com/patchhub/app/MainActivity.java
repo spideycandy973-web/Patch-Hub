@@ -25,7 +25,7 @@ import java.util.*;
 import java.util.zip.*;
 
 public class MainActivity extends Activity {
-    private static final int APK = 1, REPLACEMENT = 2, OUTPUT = 3, EXTRACT = 4;
+    private static final int APK = 1, REPLACEMENT = 2, OUTPUT = 3, EXTRACT = 4, INSPECT_FILE = 5;
     private static final int MAX_TEXT = 256 * 1024;
     private static final int WHITE = Color.rgb(241, 246, 255), MUTED = Color.rgb(165, 182, 209), BLUE = Color.rgb(131, 183, 255);
     private Uri apk, replacement;
@@ -64,6 +64,13 @@ public class MainActivity extends Activity {
         Shizuku.addBinderDeadListener(binderDead);
         Shizuku.addRequestPermissionResultListener(permissionResult);
         refreshShizuku();
+
+        LinearLayout inspect = card(root); inspect.addView(text("FILE INSPECTOR", 12, BLUE, true));
+        TextView inspectHelp = text("Inspect a standalone file, or select an APK entry below. View a bounded hex/ASCII preview, strings and SHA-256. This is not a decompiler.", 13, MUTED, false); space(inspectHelp, 10, 0); inspect.addView(inspectHelp);
+        Button inspectFile = button("Open any local file", false); inspect.addView(inspectFile);
+        Button inspectEntry = button("Inspect selected APK entry", false); inspect.addView(inspectEntry);
+        inspectFile.setOnClickListener(v -> { if (!busy) pick(INSPECT_FILE, "*/*"); });
+        inspectEntry.setOnClickListener(v -> { if (busy) return; String target = selectedTarget(); if (target != null) inspectData(apk, queue.get(target), target, false); });
 
         LinearLayout source = card(root); source.addView(text("01   SOURCE APK", 12, BLUE, true));
         apkLabel = text("No APK selected", 18, WHITE, true); space(apkLabel, 12, 3); source.addView(apkLabel);
@@ -154,7 +161,8 @@ public class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if (request == APK) { apk = uri; entries.clear(); queue.clear(); replacement = null; path.setText(""); replacementLabel.setText("No replacement selected"); updateQueue(); apkLabel.setText(name(uri)); scan(uri); }
+        if (request == INSPECT_FILE) { inspectData(uri, null, name(uri), true); }
+        else if (request == APK) { apk = uri; entries.clear(); queue.clear(); replacement = null; path.setText(""); replacementLabel.setText("No replacement selected"); updateQueue(); apkLabel.setText(name(uri)); scan(uri); }
         else if (request == REPLACEMENT) { replacement = uri; replacementLabel.setText(name(uri)); }
         else if (request == EXTRACT) {
             if (extractTarget == null || apk == null) { status.setText("Select an APK file again."); return; }
@@ -171,6 +179,27 @@ public class MainActivity extends Activity {
             Uri source = apk; LinkedHashMap<String, Uri> patches = new LinkedHashMap<>(queue); setBusy(true); status.setText("Building patched APK…");
             new Thread(() -> { String msg; try { createPatch(source, patches, uri); msg = "Exported unsigned APK. Align and sign before installation; updates require the original signing key."; } catch (Exception e) { msg = "Export failed: " + e.getMessage() + ". The output may be incomplete; delete it if needed."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
         }
+    }
+    private void inspectData(Uri source, Uri staged, String target, boolean standalone) {
+        setBusy(true); status.setText("Inspecting file…");
+        new Thread(() -> {
+            String summary = null, problem = null;
+            try {
+                byte[] data;
+                if (standalone) { try (InputStream in = getContentResolver().openInputStream(source)) { if (in == null) throw new IOException("Cannot open file"); data = readBounded(in, 16 * 1024 * 1024); } }
+                else data = loadEntry(source, staged, target, 16 * 1024 * 1024);
+                summary = FileInspector.describe(data);
+            } catch (Exception e) { problem = e.getMessage(); }
+            final String result = summary, error = problem;
+            runOnUiThread(() -> {
+                setBusy(false);
+                if (error != null) { status.setText("Inspection failed: " + error); return; }
+                status.setText("Inspection complete.");
+                TextView details = new TextView(this); details.setText(result); details.setTextSize(11); details.setTypeface(Typeface.MONOSPACE); details.setTextIsSelectable(true); details.setPadding(dp(16), dp(12), dp(16), dp(12));
+                ScrollView pane = new ScrollView(this); pane.addView(details);
+                new AlertDialog.Builder(this).setTitle(target + (staged != null ? " · queued version" : "")).setView(pane).setPositiveButton("Close", null).show();
+            });
+        }).start();
     }
     private void showHexEditor() {
         if (busy) return;
