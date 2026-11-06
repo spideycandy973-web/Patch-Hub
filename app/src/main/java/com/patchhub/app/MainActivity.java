@@ -16,11 +16,15 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.zip.*;
 
 public class MainActivity extends Activity {
-    private static final int APK = 1, REPLACEMENT = 2, OUTPUT = 3;
+    private static final int APK = 1, REPLACEMENT = 2, OUTPUT = 3, EXTRACT = 4;
+    private static final int MAX_TEXT = 256 * 1024;
     private static final int WHITE = Color.rgb(241, 246, 255), MUTED = Color.rgb(165, 182, 209), BLUE = Color.rgb(131, 183, 255);
     private Uri apk, replacement;
     private final ArrayList<String> entries = new ArrayList<>();
@@ -29,6 +33,7 @@ public class MainActivity extends Activity {
     private EditText path;
     private Button scanButton, saveButton, chooseApkButton, chooseReplacementButton, addButton;
     private boolean busy;
+    private String extractTarget;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -50,6 +55,8 @@ public class MainActivity extends Activity {
         LinearLayout edit = card(root); edit.addView(text("02   PATCH QUEUE", 12, BLUE, true));
         TextView explanation = text("Choose an existing entry, then select its replacement. Add multiple changes before exporting.", 14, MUTED, false); space(explanation, 10, 6); edit.addView(explanation);
         path = new EditText(this); path.setSingleLine(true); path.setTextColor(WHITE); path.setHintTextColor(MUTED); path.setTextSize(14); path.setHint("Entry path, e.g. assets/config.json"); path.setPadding(dp(14), dp(12), dp(14), dp(12)); path.setBackground(shape(0x55344060, 14, 0x557a97bc)); edit.addView(path);
+        Button textEdit = button("Edit selected text file", false); edit.addView(textEdit);
+        Button extract = button("Extract selected original file", false); edit.addView(extract);
         chooseReplacementButton = button("Choose replacement file", false); edit.addView(chooseReplacementButton);
         replacementLabel = text("No replacement selected", 13, MUTED, false); edit.addView(replacementLabel);
         addButton = button("Add to queue", false); edit.addView(addButton);
@@ -65,6 +72,14 @@ public class MainActivity extends Activity {
         chooseReplacementButton.setOnClickListener(v -> { if (!busy) pick(REPLACEMENT, "*/*"); });
         scanButton.setOnClickListener(v -> { if (apk == null) status.setText("Choose an APK first."); else if (!busy) browse(); });
         addButton.setOnClickListener(v -> addToQueue());
+        textEdit.setOnClickListener(v -> editTextEntry());
+        extract.setOnClickListener(v -> {
+            if (busy) return;
+            String target = selectedTarget(); if (target == null) return;
+            extractTarget = target;
+            String fileName = target.substring(target.lastIndexOf('/') + 1);
+            startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, fileName), EXTRACT);
+        });
         clear.setOnClickListener(v -> { if (!busy) { queue.clear(); updateQueue(); } });
         saveButton.setOnClickListener(v -> {
             if (busy) return;
@@ -95,11 +110,66 @@ public class MainActivity extends Activity {
         Uri uri = data.getData();
         if (request == APK) { apk = uri; entries.clear(); queue.clear(); replacement = null; path.setText(""); replacementLabel.setText("No replacement selected"); updateQueue(); apkLabel.setText(name(uri)); scan(uri); }
         else if (request == REPLACEMENT) { replacement = uri; replacementLabel.setText(name(uri)); }
+        else if (request == EXTRACT) {
+            if (extractTarget == null || apk == null) { status.setText("Select an APK file again."); return; }
+            if (uri.equals(apk) || queue.containsValue(uri)) { status.setText("Choose a different output document from every input."); return; }
+            Uri source = apk; String target = extractTarget; setBusy(true); status.setText("Extracting original file…");
+            new Thread(() -> { String msg; try (InputStream raw = getContentResolver().openInputStream(source); OutputStream out = getContentResolver().openOutputStream(uri, "w")) {
+                if (raw == null || out == null) throw new IOException("Could not open selected files");
+                try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw))) { ZipEntry item; boolean found = false; while ((item = zip.getNextEntry()) != null) { if (item.getName().equals(target)) { copy(zip, out); found = true; break; } zip.closeEntry(); } if (!found) throw new IOException("Entry not found"); }
+                msg = "Original file extracted.";
+            } catch (Exception e) { msg = "Extraction failed: " + e.getMessage() + ". Output may be incomplete."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
+        }
         else if (request == OUTPUT) {
             if (uri.equals(apk) || queue.containsValue(uri)) { status.setText("Choose a different output document from every input."); return; }
             Uri source = apk; LinkedHashMap<String, Uri> patches = new LinkedHashMap<>(queue); setBusy(true); status.setText("Building patched APK…");
             new Thread(() -> { String msg; try { createPatch(source, patches, uri); msg = "Exported unsigned APK. Align and sign before installation; updates require the original signing key."; } catch (Exception e) { msg = "Export failed: " + e.getMessage() + ". The output may be incomplete; delete it if needed."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
         }
+    }
+    private String selectedTarget() {
+        String target = path.getText().toString().trim();
+        if (apk == null || !validPath(target) || !entries.contains(target)) { status.setText("Choose an existing file in the APK explorer first."); return null; }
+        return target;
+    }
+    private byte[] readBounded(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] buf = new byte[8192]; int n;
+        while ((n = in.read(buf)) != -1) { if (out.size() + n > MAX_TEXT) throw new IOException("Text editor limit is 256 KiB"); out.write(buf, 0, n); }
+        return out.toByteArray();
+    }
+    private void editTextEntry() {
+        if (busy) return;
+        String target = selectedTarget(); if (target == null) return;
+        Uri source = apk, staged = queue.get(target); setBusy(true); status.setText("Opening text editor…");
+        new Thread(() -> {
+            String value = null, problem = null;
+            try {
+                byte[] bytes = null;
+                if (staged != null) {
+                    try (InputStream in = getContentResolver().openInputStream(staged)) { if (in == null) throw new IOException("Cannot open queued replacement"); bytes = readBounded(in); }
+                } else {
+                    try (InputStream raw = getContentResolver().openInputStream(source)) {
+                        if (raw == null) throw new IOException("Cannot open APK");
+                        try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw))) { ZipEntry e; while ((e = zip.getNextEntry()) != null) { if (e.getName().equals(target)) { bytes = readBounded(zip); break; } zip.closeEntry(); } }
+                    }
+                }
+                if (bytes == null) throw new IOException("File not found");
+                for (byte b : bytes) if (b == 0) throw new IOException("Binary files cannot be edited as text");
+                value = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
+            } catch (Exception e) { problem = e.getMessage(); }
+            final String loaded = value, error = problem;
+            runOnUiThread(() -> {
+                setBusy(false);
+                if (error != null) { status.setText("Cannot edit: " + error); return; }
+                EditText editor = new EditText(this); editor.setText(loaded); editor.setTextSize(14); editor.setTypeface(Typeface.MONOSPACE); editor.setGravity(Gravity.TOP | Gravity.START); editor.setSingleLine(false); editor.setMinLines(10); editor.setMaxLines(18); editor.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+                AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Edit UTF-8 text").setMessage(target + "\nSaved edits are staged in the queue, not applied to the original.").setView(editor).setNegativeButton("Cancel", null).setPositiveButton("Stage edit", null).create();
+                dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    byte[] data = editor.getText().toString().getBytes(StandardCharsets.UTF_8);
+                    if (data.length > MAX_TEXT) { editor.setError("Text editor limit is 256 KiB"); return; }
+                    try { File file = File.createTempFile("patch-", ".txt", getCacheDir()); try (FileOutputStream out = new FileOutputStream(file)) { out.write(data); } queue.put(target, Uri.fromFile(file)); updateQueue(); status.setText("Text edit staged. Export to create the patched APK."); dialog.dismiss(); }
+                    catch (IOException e) { status.setText("Could not stage edit: " + e.getMessage()); }
+                })); dialog.show();
+            });
+        }).start();
     }
     private void scan(Uri source) {
         setBusy(true); entryCount.setText("Inspecting archive…"); status.setText("Reading APK entries…");
