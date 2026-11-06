@@ -21,6 +21,7 @@ import org.json.JSONObject;
 import java.security.MessageDigest;
 import java.net.URL;
 import java.net.HttpURLConnection;
+import java.net.URLEncoder;
 import android.view.View;
 import android.widget.*;
 import java.io.*;
@@ -86,6 +87,8 @@ public class MainActivity extends Activity {
 
         LinearLayout catalog = card(root); catalog.addView(text("COMMUNITY PATCHES", 12, BLUE, true));
         TextView catalogHelp = text("Import a Patch Hub JSON patch from a file or direct HTTPS link. Patches target an exact APK hash. Only use patches you trust; compatibility checks do not prove safety.", 13, MUTED, false); space(catalogHelp, 10, 0); catalog.addView(catalogHelp);
+        Button searchGithub = button("Search GitHub repositories", false); catalog.addView(searchGithub);
+        searchGithub.setOnClickListener(v -> { if (!busy) searchGithubDialog(); });
         Button importPatch = button("Import a patch file", false); catalog.addView(importPatch);
         Button importLink = button("Get patch from a link", false); catalog.addView(importLink);
         importLink.setOnClickListener(v -> { if (busy) return; if (apk == null) { status.setText("Choose and inspect an APK before importing a patch."); return; } showPatchLink(); });
@@ -193,6 +196,64 @@ public class MainActivity extends Activity {
             Uri source = apk; LinkedHashMap<String, Uri> patches = new LinkedHashMap<>(queue); setBusy(true); status.setText("Building patched APK…");
             new Thread(() -> { String msg; try { createPatch(source, patches, uri); msg = "Exported unsigned APK. Align and sign before installation; updates require the original signing key."; } catch (Exception e) { msg = "Export failed: " + e.getMessage() + ". The output may be incomplete; delete it if needed."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
         }
+    }
+    private byte[] githubGet(String url, int max) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            conn.setInstanceFollowRedirects(false); conn.setConnectTimeout(15000); conn.setReadTimeout(30000);
+            conn.setRequestProperty("Accept", "application/vnd.github+json"); conn.setRequestProperty("User-Agent", "Patch-Hub-Android");
+            int code = conn.getResponseCode();
+            if (code == 403 || code == 429) throw new IOException("GitHub rate limit or access restriction (HTTP " + code + "). Try again later.");
+            if (code != 200) throw new IOException("GitHub returned HTTP " + code);
+            try (InputStream in = conn.getInputStream()) { return readBounded(in, max); }
+        } finally { conn.disconnect(); }
+    }
+    private void searchGithubDialog() {
+        EditText query = new EditText(this); query.setSingleLine(true); query.setHint("Repository keywords, e.g. android patch");
+        new AlertDialog.Builder(this).setTitle("Search public GitHub repositories").setMessage("Searches repositories, not patches inside them. Results may not contain Patch Hub patches and are not verified. GitHub receives your query and IP address; anonymous rate limits apply.").setView(query).setNegativeButton("Cancel", null).setPositiveButton("Search", (dialog, which) -> {
+            String q = query.getText().toString().trim(); if (q.isEmpty() || q.length() > 200) { status.setText("Enter a search query of up to 200 characters."); return; }
+            setBusy(true); status.setText("Searching GitHub…");
+            new Thread(() -> {
+                ArrayList<String> repos = new ArrayList<>(), branches = new ArrayList<>(); String problem = null;
+                try {
+                    String api = "https://api.github.com/search/repositories?per_page=20&q=" + URLEncoder.encode(q, "UTF-8");
+                    JSONObject response = new JSONObject(new String(githubGet(api, 2 * 1024 * 1024), StandardCharsets.UTF_8)); JSONArray items = response.getJSONArray("items");
+                    for (int i = 0; i < items.length(); i++) { JSONObject repo = items.getJSONObject(i); String name = repo.getString("full_name"), branch = repo.getString("default_branch"); if (name.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+") && branch.length() <= 255) { repos.add(name); branches.add(branch); } }
+                } catch (Exception e) { problem = e.getMessage(); }
+                final String error = problem;
+                runOnUiThread(() -> { setBusy(false); if (error != null) { status.setText("Search failed: " + error); return; } if (repos.isEmpty()) { status.setText("No public repositories found."); return; } status.setText("Choose a repository to inspect its JSON files."); new AlertDialog.Builder(this).setTitle("Repositories · first 20").setItems(repos.toArray(new String[0]), (d, index) -> browseGithubRepo(repos.get(index), branches.get(index))).setNegativeButton("Close", null).show(); });
+            }).start();
+        }).show();
+    }
+    private void browseGithubRepo(String repo, String branch) {
+        if (busy) return; setBusy(true); status.setText("Listing repository files…");
+        new Thread(() -> {
+            ArrayList<String> paths = new ArrayList<>(), hashes = new ArrayList<>(); String problem = null; boolean truncated = false;
+            try {
+                String api = "https://api.github.com/repos/" + repo + "/git/trees/" + android.net.Uri.encode(branch) + "?recursive=1";
+                JSONObject tree = new JSONObject(new String(githubGet(api, 4 * 1024 * 1024), StandardCharsets.UTF_8)); truncated = tree.optBoolean("truncated", false); JSONArray items = tree.getJSONArray("tree");
+                for (int i = 0; i < items.length() && paths.size() < 100; i++) { JSONObject item = items.getJSONObject(i); String path = item.optString("path"), sha = item.optString("sha"); long size = item.optLong("size", -1); if ("blob".equals(item.optString("type")) && path.toLowerCase(Locale.ROOT).endsWith(".json") && sha.matches("[a-fA-F0-9]{40}") && size >= 0 && size <= 4 * 1024 * 1024) { paths.add(path); hashes.add(sha); } }
+            } catch (Exception e) { problem = e.getMessage(); }
+            final String error = problem; final boolean incomplete = truncated;
+            runOnUiThread(() -> { setBusy(false); if (error != null) { status.setText("Repository listing failed: " + error); return; } if (paths.isEmpty()) { status.setText("No JSON files found in this repository" + (incomplete ? " (listing was truncated)." : ".")); return; }
+                status.setText("Select a JSON file. It may not be a Patch Hub patch."); new AlertDialog.Builder(this).setTitle(repo + " · JSON files" + (incomplete ? " (partial)" : "")).setMessage("Showing up to 100 files. Only Patch Hub v1 patches can be imported; files are not verified.").setItems(paths.toArray(new String[0]), (d, index) -> downloadGithubBlob(repo, hashes.get(index), paths.get(index))).setNegativeButton("Close", null).show(); });
+        }).start();
+    }
+    private void downloadGithubBlob(String repo, String sha, String path) {
+        if (busy) return; if (apk == null) { status.setText("Choose and inspect an APK first, then search again."); return; }
+        setBusy(true); status.setText("Downloading " + path + "…");
+        new Thread(() -> {
+            File file = null; String problem = null;
+            try {
+                String api = "https://api.github.com/repos/" + repo + "/git/blobs/" + sha;
+                JSONObject blob = new JSONObject(new String(githubGet(api, 6 * 1024 * 1024), StandardCharsets.UTF_8));
+                if (!"base64".equals(blob.getString("encoding")) || blob.getLong("size") > 4 * 1024 * 1024) throw new IOException("Unsupported or oversized file");
+                byte[] bytes = Base64.decode(blob.getString("content"), Base64.DEFAULT); if (bytes.length > 4 * 1024 * 1024 || bytes.length != blob.getLong("size")) throw new IOException("Invalid blob size");
+                file = File.createTempFile("github-patch-", ".json", getCacheDir()); try (FileOutputStream out = new FileOutputStream(file)) { out.write(bytes); }
+            } catch (Exception e) { problem = e.getMessage(); if (file != null) file.delete(); }
+            final File downloaded = file; final String error = problem;
+            runOnUiThread(() -> { setBusy(false); if (error != null) { status.setText("Download failed: " + error); return; } status.setText("Downloaded " + repo + "/" + path + ". Checking compatibility…"); importPatchPack(Uri.fromFile(downloaded)); });
+        }).start();
     }
     private void showPatchLink() {
         EditText url = new EditText(this); url.setSingleLine(true); url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI); url.setHint("https://github.com/owner/repo/blob/main/patch.json");

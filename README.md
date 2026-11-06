@@ -50,4 +50,8 @@ Replace the hash and contents with those for the authorized APK and desired repl
 
 ### Import from a link
 
-Choose and inspect the APK first, then tap **Get patch from a link** and paste a public GitHub `blob` file link or direct HTTPS link to a Patch Hub v1 JSON patch. GitHub blob links are converted to raw file links. Other direct HTTPS URLs are fetched as entered; redirects are deliberately not followed, so use the final direct URL. Files are capped at 4 MiB. The server receives your IP address. The app does not execute downloaded scripts, browse GitHub, search the web, support private repositories, or interpret arbitrary GitHub patch formats. A matching APK hash is only a compatibility check, not proof of safety or authenticity.
+Choose and inspect the APK first, then tap **Get patch from a link** and paste a public GitHub `blob` file link or direct HTTPS link to a Patch Hub v1 JSON patch. GitHub blob links are converted to raw file links. Other direct HTTPS URLs are fetched as entered; redirects are deliberately not followed, so use the final direct URL. Files are capped at 4 MiB. The server receives your IP address. The app does not execute downloaded scripts, search the general web, support private repositories, or interpret arbitrary GitHub patch formats. A matching APK hash is only a compatibility check, not proof of safety or authenticity.
+
+### Search GitHub
+
+Use **Search GitHub repositories** to search public repository names and descriptions without a GitHub account. Select a repository to list up to 100 JSON files on its default branch, then choose a file to download and check against the selected APK. Select and inspect an APK before importing. GitHub's anonymous API rate limits apply; large or truncated repository trees may not be fully shown. A search result is not a vetted patch, and most JSON files will not be compatible. Search queries and the user's IP address are sent to GitHub.
