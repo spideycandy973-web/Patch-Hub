@@ -194,7 +194,7 @@ public class MainActivity extends Activity {
                     if (error != null) { status.setText("Binary patch failed: " + error); return; }
                     if (matches.count == 0) { status.setText("No matching bytes found; nothing changed."); return; }
                     StringBuilder offsets = new StringBuilder(); for (int offset : matches.offsets) { if (offsets.length() > 0) offsets.append(", "); offsets.append(String.format(Locale.ROOT, "0x%X", offset)); }
-                    new AlertDialog.Builder(this).setTitle("Confirm binary patch").setMessage(matches.count + " non-overlapping match(es). First offsets: " + offsets + "\n\nStage these changes? The original APK stays unchanged; modified APKs may not work.").setNegativeButton("Cancel", null).setPositiveButton("Stage changes", (d, w) -> {
+                    new AlertDialog.Builder(this).setTitle("Confirm binary patch").setMessage(matches.count + " non-overlapping match(es). First offsets: " + offsets + "\n\nStage these changes? The original APK stays unchanged; modified APKs may not work.").setNegativeButton("Cancel", null).setPositiveButton("Stage changes", (confirmation, w) -> {
                         try { File file = File.createTempFile("patch-", ".bin", getCacheDir()); try (FileOutputStream out = new FileOutputStream(file)) { out.write(patched); } queue.put(target, Uri.fromFile(file)); updateQueue(); status.setText("Binary patch staged for " + target + ". Export to create the APK."); }
                         catch (IOException e) { status.setText("Could not stage patch: " + e.getMessage()); }
                     }).show();
