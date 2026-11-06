@@ -74,6 +74,7 @@ public class MainActivity extends Activity {
         LinearLayout edit = card(root); edit.addView(text("02   PATCH QUEUE", 12, BLUE, true));
         TextView explanation = text("Choose an existing entry, then select its replacement. Add multiple changes before exporting.", 14, MUTED, false); space(explanation, 10, 6); edit.addView(explanation);
         path = new EditText(this); path.setSingleLine(true); path.setTextColor(WHITE); path.setHintTextColor(MUTED); path.setTextSize(14); path.setHint("Entry path, e.g. assets/config.json"); path.setPadding(dp(14), dp(12), dp(14), dp(12)); path.setBackground(shape(0x55344060, 14, 0x557a97bc)); edit.addView(path);
+        Button hexEdit = button("Binary patch · find & replace hex", false); edit.addView(hexEdit);
         Button textEdit = button("Edit selected text file", false); edit.addView(textEdit);
         Button extract = button("Extract selected original file", false); edit.addView(extract);
         chooseReplacementButton = button("Choose replacement file", false); edit.addView(chooseReplacementButton);
@@ -91,6 +92,7 @@ public class MainActivity extends Activity {
         chooseReplacementButton.setOnClickListener(v -> { if (!busy) pick(REPLACEMENT, "*/*"); });
         scanButton.setOnClickListener(v -> { if (apk == null) status.setText("Choose an APK first."); else if (!busy) browse(); });
         addButton.setOnClickListener(v -> addToQueue());
+        hexEdit.setOnClickListener(v -> showHexEditor());
         textEdit.setOnClickListener(v -> editTextEntry());
         extract.setOnClickListener(v -> {
             if (busy) return;
@@ -170,14 +172,53 @@ public class MainActivity extends Activity {
             new Thread(() -> { String msg; try { createPatch(source, patches, uri); msg = "Exported unsigned APK. Align and sign before installation; updates require the original signing key."; } catch (Exception e) { msg = "Export failed: " + e.getMessage() + ". The output may be incomplete; delete it if needed."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
         }
     }
+    private void showHexEditor() {
+        if (busy) return;
+        final String target = selectedTarget(); if (target == null) return;
+        LinearLayout form = new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(dp(20), 0, dp(20), 0);
+        EditText find = new EditText(this); find.setSingleLine(true); find.setHint("Find hex bytes, e.g. 01 FF 20"); form.addView(find);
+        EditText replace = new EditText(this); replace.setSingleLine(true); replace.setHint("Replace with hex bytes (same length)"); form.addView(replace);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Binary patch").setMessage(target + "\nReplaces all non-overlapping matches in this one entry. Limit: 16 MiB. Raw edits can break code, checksums and app integrity.").setView(form).setNegativeButton("Cancel", null).setPositiveButton("Find matches", null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            byte[] needle, replacement;
+            try { needle = HexPatch.parse(find.getText().toString()); replacement = HexPatch.parse(replace.getText().toString()); if (needle.length != replacement.length) throw new IllegalArgumentException("Find and replacement must be the same length."); }
+            catch (IllegalArgumentException e) { find.setError(e.getMessage()); return; }
+            Uri source = apk, staged = queue.get(target); dialog.dismiss(); setBusy(true); status.setText("Searching selected entry…");
+            new Thread(() -> {
+                byte[] data = null; HexPatch.Result result = null; String problem = null;
+                try { data = loadEntry(source, staged, target, 16 * 1024 * 1024); result = HexPatch.replace(data, needle, replacement); }
+                catch (Exception e) { problem = e.getMessage(); }
+                final byte[] patched = data; final HexPatch.Result matches = result; final String error = problem;
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    if (error != null) { status.setText("Binary patch failed: " + error); return; }
+                    if (matches.count == 0) { status.setText("No matching bytes found; nothing changed."); return; }
+                    StringBuilder offsets = new StringBuilder(); for (int offset : matches.offsets) { if (offsets.length() > 0) offsets.append(", "); offsets.append(String.format(Locale.ROOT, "0x%X", offset)); }
+                    new AlertDialog.Builder(this).setTitle("Confirm binary patch").setMessage(matches.count + " non-overlapping match(es). First offsets: " + offsets + "\n\nStage these changes? The original APK stays unchanged; modified APKs may not work.").setNegativeButton("Cancel", null).setPositiveButton("Stage changes", (d, w) -> {
+                        try { File file = File.createTempFile("patch-", ".bin", getCacheDir()); try (FileOutputStream out = new FileOutputStream(file)) { out.write(patched); } queue.put(target, Uri.fromFile(file)); updateQueue(); status.setText("Binary patch staged for " + target + ". Export to create the APK."); }
+                        catch (IOException e) { status.setText("Could not stage patch: " + e.getMessage()); }
+                    }).show();
+                });
+            }).start();
+        })); dialog.show();
+    }
+    private byte[] loadEntry(Uri source, Uri staged, String target, int limit) throws IOException {
+        if (staged != null) { try (InputStream in = getContentResolver().openInputStream(staged)) { if (in == null) throw new IOException("Cannot open queued replacement"); return readBounded(in, limit); } }
+        try (InputStream raw = getContentResolver().openInputStream(source)) {
+            if (raw == null) throw new IOException("Cannot open APK");
+            try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw))) { ZipEntry e; while ((e = zip.getNextEntry()) != null) { if (e.getName().equals(target)) return readBounded(zip, limit); zip.closeEntry(); } }
+        }
+        throw new IOException("File not found");
+    }
     private String selectedTarget() {
         String target = path.getText().toString().trim();
         if (apk == null || !validPath(target) || !entries.contains(target)) { status.setText("Choose an existing file in the APK explorer first."); return null; }
         return target;
     }
-    private byte[] readBounded(InputStream in) throws IOException {
+    private byte[] readBounded(InputStream in) throws IOException { return readBounded(in, MAX_TEXT); }
+    private byte[] readBounded(InputStream in, int limit) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] buf = new byte[8192]; int n;
-        while ((n = in.read(buf)) != -1) { if (out.size() + n > MAX_TEXT) throw new IOException("Text editor limit is 256 KiB"); out.write(buf, 0, n); }
+        while ((n = in.read(buf)) != -1) { if (out.size() + n > limit) throw new IOException("Entry exceeds size limit (" + (limit / 1024) + " KiB)"); out.write(buf, 0, n); }
         return out.toByteArray();
     }
     private void editTextEntry() {
