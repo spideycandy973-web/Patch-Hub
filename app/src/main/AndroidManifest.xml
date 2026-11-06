@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
     <application android:label="Patch Hub" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="false">
         <provider android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

@@ -19,6 +19,8 @@ import android.util.Base64;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.security.MessageDigest;
+import java.net.URL;
+import java.net.HttpURLConnection;
 import android.view.View;
 import android.widget.*;
 import java.io.*;
@@ -83,8 +85,10 @@ public class MainActivity extends Activity {
         scanButton = button("Browse & search files", false); source.addView(scanButton);
 
         LinearLayout catalog = card(root); catalog.addView(text("COMMUNITY PATCHES", 12, BLUE, true));
-        TextView catalogHelp = text("Import a Patch Hub JSON patch from your device. Patches target an exact APK hash and replace selected files. Only install patches you trust; compatibility checks do not prove safety.", 13, MUTED, false); space(catalogHelp, 10, 0); catalog.addView(catalogHelp);
-        Button importPatch = button("Import a patch", false); catalog.addView(importPatch);
+        TextView catalogHelp = text("Import a Patch Hub JSON patch from a file or direct HTTPS link. Patches target an exact APK hash. Only use patches you trust; compatibility checks do not prove safety.", 13, MUTED, false); space(catalogHelp, 10, 0); catalog.addView(catalogHelp);
+        Button importPatch = button("Import a patch file", false); catalog.addView(importPatch);
+        Button importLink = button("Get patch from a link", false); catalog.addView(importLink);
+        importLink.setOnClickListener(v -> { if (busy) return; if (apk == null) { status.setText("Choose and inspect an APK before importing a patch."); return; } showPatchLink(); });
         importPatch.setOnClickListener(v -> { if (busy) return; if (apk == null) { status.setText("Choose and inspect an APK before importing a patch."); return; } pick(PATCH_PACK, "*/*"); });
 
         LinearLayout edit = card(root); edit.addView(text("02   PATCH QUEUE", 12, BLUE, true));
@@ -189,6 +193,32 @@ public class MainActivity extends Activity {
             Uri source = apk; LinkedHashMap<String, Uri> patches = new LinkedHashMap<>(queue); setBusy(true); status.setText("Building patched APK…");
             new Thread(() -> { String msg; try { createPatch(source, patches, uri); msg = "Exported unsigned APK. Align and sign before installation; updates require the original signing key."; } catch (Exception e) { msg = "Export failed: " + e.getMessage() + ". The output may be incomplete; delete it if needed."; } final String resultMsg = msg; runOnUiThread(() -> { status.setText(resultMsg); setBusy(false); }); }).start();
         }
+    }
+    private void showPatchLink() {
+        EditText url = new EditText(this); url.setSingleLine(true); url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI); url.setHint("https://github.com/owner/repo/blob/main/patch.json");
+        new AlertDialog.Builder(this).setTitle("Import from a link").setMessage("Paste a public GitHub file link or direct HTTPS link to a Patch Hub JSON patch. No scripts are executed. Only use a trusted source; the server will see your IP address.").setView(url).setNegativeButton("Cancel", null).setPositiveButton("Download", (dialog, which) -> {
+            final String link;
+            try { link = PatchLink.normalize(url.getText().toString()); }
+            catch (Exception ex) { status.setText("Invalid link: " + ex.getMessage()); return; }
+            setBusy(true); status.setText("Downloading patch…");
+            new Thread(() -> {
+                File file = null; String problem = null; HttpURLConnection connection = null;
+                try {
+                    connection = (HttpURLConnection)new URL(link).openConnection();
+                    connection.setInstanceFollowRedirects(false); connection.setConnectTimeout(15000); connection.setReadTimeout(30000);
+                    connection.setRequestProperty("Accept", "application/json, text/plain;q=0.9"); connection.setRequestProperty("User-Agent", "Patch-Hub-Android");
+                    int response = connection.getResponseCode();
+                    if (response >= 300 && response < 400) throw new IOException("Redirects are not followed; use a direct HTTPS file URL");
+                    if (response != 200) throw new IOException("Server returned HTTP " + response);
+                    long length = connection.getContentLengthLong(); if (length > 4 * 1024 * 1024) throw new IOException("Patch is larger than 4 MiB");
+                    byte[] data; try (InputStream in = connection.getInputStream()) { data = readBounded(in, 4 * 1024 * 1024); }
+                    file = File.createTempFile("downloaded-patch-", ".json", getCacheDir()); try (FileOutputStream out = new FileOutputStream(file)) { out.write(data); }
+                } catch (Exception ex) { problem = ex.getMessage(); if (file != null) file.delete(); }
+                finally { if (connection != null) connection.disconnect(); }
+                final File downloaded = file; final String error = problem;
+                runOnUiThread(() -> { setBusy(false); if (error != null) { status.setText("Download failed: " + error); return; } status.setText("Downloaded from " + link + ". Checking patch…"); importPatchPack(Uri.fromFile(downloaded)); });
+            }).start();
+        }).show();
     }
     private static final class ImportedPatch {
         String title, author, expectedHash;

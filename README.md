@@ -1,6 +1,6 @@
 # Patch Hub
 
-An early Android utility for inspecting an APK and replacing **multiple existing files inside it** in an APK you own or are authorized to modify. It uses Android's document picker and runs locally; APK editing does not require root or network access. Optional Shizuku connection diagnostics can report shell or root identity after the user grants permission; no patch operation currently uses Shizuku.
+An early Android utility for inspecting an APK and replacing **multiple existing files inside it** in an APK you own or are authorized to modify. It uses Android's document picker; APK editing does not require root or network access. Fetching patch files from links requires internet access. Optional Shizuku connection diagnostics can report shell or root identity after the user grants permission; no patch operation currently uses Shizuku.
 
 ## What it does (and doesn't)
 
@@ -47,3 +47,7 @@ A creator can share a UTF-8 JSON file in Patch Hub format version 1. The user se
 ```
 
 Replace the hash and contents with those for the authorized APK and desired replacement. The example encodes `Hello`; it does not add features to a third-party app. All paths must already exist and cannot be signature files. Imports are capped at 4 MiB of JSON and 50 replacement entries, and conflicting queued paths are rejected. The patch file and its replacement bytes can contain malicious content: hash matching checks compatibility, not authenticity or safety.
+
+### Import from a link
+
+Choose and inspect the APK first, then tap **Get patch from a link** and paste a public GitHub `blob` file link or direct HTTPS link to a Patch Hub v1 JSON patch. GitHub blob links are converted to raw file links. Other direct HTTPS URLs are fetched as entered; redirects are deliberately not followed, so use the final direct URL. Files are capped at 4 MiB. The server receives your IP address. The app does not execute downloaded scripts, browse GitHub, search the web, support private repositories, or interpret arbitrary GitHub patch formats. A matching APK hash is only a compatibility check, not proof of safety or authenticity.
